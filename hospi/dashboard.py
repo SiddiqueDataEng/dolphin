@@ -114,7 +114,10 @@ def per_column_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 def value_frequencies(df: pd.DataFrame, column: str, top_n: int = 20) -> pd.DataFrame:
 	vc = df[column].value_counts(dropna=False).head(top_n)
-	return vc.reset_index().rename(columns={"index": column, column: "count"})
+	out = vc.reset_index()
+	# Use safe, generic headers to avoid duplicates regardless of column name
+	out.columns = ["value", "frequency"]
+	return out
 
 
 def correlation_heatmap(df: pd.DataFrame) -> None:
