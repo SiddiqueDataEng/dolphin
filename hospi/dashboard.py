@@ -69,8 +69,9 @@ def per_column_stats(df: pd.DataFrame) -> pd.DataFrame:
 		series = df[col]
 		dtype = str(series.dtype)
 		null_count = int(series.isna().sum())
-		blank_count = int((series.astype(str).str.len() == 0).sum()) if series.dtype == object or pd.api.types.is_string_dtype(series) else 0
-		whitespace_count = int((series.astype(str).str.match(r"^\s+$")).sum()) if series.dtype == object or pd.api.types.is_string_dtype(series) else 0
+		is_string = series.dtype == object or pd.api.types.is_string_dtype(series)
+		blank_count = int((series.astype(str).str.len() == 0).sum()) if is_string else 0
+		whitespace_count = int((series.astype(str).str.match(r"^\s+$")).sum()) if is_string else 0
 		distinct_count = int(series.nunique(dropna=True))
 
 		row = {
@@ -81,20 +82,32 @@ def per_column_stats(df: pd.DataFrame) -> pd.DataFrame:
 			"whitespace_only": whitespace_count,
 			"distinct_count": distinct_count,
 		}
-		if pd.api.types.is_numeric_dtype(series):
+
+		if pd.api.types.is_bool_dtype(series):
+			true_count = int(series.fillna(False).sum())
+			false_count = int((~series.fillna(False)).sum())
 			row.update({
-				"min": float(np.nanmin(series)),
-				"p05": float(np.nanpercentile(series, 5)),
-				"p25": float(np.nanpercentile(series, 25)),
-				"median": float(np.nanpercentile(series, 50)),
-				"p75": float(np.nanpercentile(series, 75)),
-				"p95": float(np.nanpercentile(series, 95)),
-				"max": float(np.nanmax(series)),
-				"mean": float(np.nanmean(series)),
-				"std": float(np.nanstd(series)),
-				"zeros": int((series == 0).sum()),
-				"negatives": int((series < 0).sum()),
+				"true_count": true_count,
+				"false_count": false_count,
 			})
+		elif pd.api.types.is_numeric_dtype(series):
+			# Safely coerce to float and drop NaNs for percentile stats
+			vals = pd.to_numeric(series, errors="coerce").astype(float).to_numpy()
+			vals = vals[~np.isnan(vals)]
+			if vals.size > 0:
+				row.update({
+					"min": float(np.nanmin(vals)),
+					"p05": float(np.nanpercentile(vals, 5)),
+					"p25": float(np.nanpercentile(vals, 25)),
+					"median": float(np.nanpercentile(vals, 50)),
+					"p75": float(np.nanpercentile(vals, 75)),
+					"p95": float(np.nanpercentile(vals, 95)),
+					"max": float(np.nanmax(vals)),
+					"mean": float(np.nanmean(vals)),
+					"std": float(np.nanstd(vals)),
+					"zeros": int((series == 0).sum()),
+					"negatives": int((series < 0).sum()),
+				})
 		stats_rows.append(row)
 	return pd.DataFrame(stats_rows)
 
