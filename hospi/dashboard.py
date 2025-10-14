@@ -142,6 +142,30 @@ def missing_heatmap(df: pd.DataFrame) -> None:
 	st.plotly_chart(fig, use_container_width=True)
 
 
+def memory_usage_by_column(df: pd.DataFrame) -> pd.DataFrame:
+	mem = df.memory_usage(deep=True)
+	return pd.DataFrame({"column": mem.index.astype(str), "memory_bytes": mem.values})
+
+
+def time_distributions(df: pd.DataFrame) -> None:
+	if "orderdate" not in df.columns:
+		st.info("No orderdate column for time distributions.")
+		return
+	dd = pd.to_datetime(df["orderdate"])  # safe
+	by_day = df.copy()
+	by_day["day"] = dd.dt.date
+	daily = by_day.groupby("day").agg(net_sales=("sales", lambda x: float(np.nansum(x)))).reset_index()
+	st.plotly_chart(px.line(daily, x="day", y="net_sales", title="Daily Net Sales"), use_container_width=True)
+
+	# If time present, derive hour; else skip gracefully
+	if hasattr(dd.dt, "hour"):
+		by_hour = dd.dt.hour.dropna()
+		if not by_hour.empty:
+			hist = by_hour.value_counts().sort_index().reset_index()
+			hist.columns = ["hour", "count"]
+			st.plotly_chart(px.bar(hist, x="hour", y="count", title="Records by Hour"), use_container_width=True)
+
+
 # ===================== BI Visuals =====================
 
 def kpi_cards(df: pd.DataFrame) -> None:
@@ -344,42 +368,62 @@ def apply_fix_cap_outliers(df: pd.DataFrame, cap_quantile: float = 0.99) -> pd.D
 
 
 def profiling_page(df: pd.DataFrame) -> None:
-	st.title("Advanced Data Profiling & Fixes")
+	st.title("Data Profile – Advanced Statistics & Fixes")
 
-	# Global summary
-	st.subheader("Dataset Summary")
-	st.write(dataset_summary(df))
+	# Summary KPI cards
+	summary = dataset_summary(df)
+	c1, c2, c3, c4 = st.columns(4)
+	c1.metric("Rows", f"{summary['rows']:,}")
+	c2.metric("Columns", f"{summary['columns']:,}")
+	c3.metric("Memory (MB)", f"{summary['memory_mb']:,}")
+	c4.metric("Date Range", f"{summary['date_min']} → {summary['date_max']}")
 
-	# Per-column extended stats
-	st.subheader("Per-Column Extended Statistics")
-	profile = per_column_stats(df)
-	st.dataframe(profile)
-	csv = profile.to_csv(index=False).encode("utf-8")
-	st.download_button("Download Profile CSV", data=csv, file_name="data_profile.csv", mime="text/csv")
+	tab_overview, tab_numeric, tab_cats, tab_missing, tab_corr, tab_time, tab_memory = st.tabs([
+		"Overview", "Numeric", "Categoricals", "Missing", "Correlations", "Time", "Memory",
+	])
 
-	# Value frequencies for categoricals
-	st.subheader("Value Frequencies (Categoricals)")
-	cat_cols = [c for c in df.columns if df[c].dtype == object or pd.api.types.is_string_dtype(df[c])]
-	if cat_cols:
-		col = st.selectbox("Select column", cat_cols)
-		st.dataframe(value_frequencies(df, col))
-	else:
-		st.info("No categorical columns detected.")
+	with tab_overview:
+		st.subheader("Per-Column Extended Statistics")
+		profile = per_column_stats(df)
+		st.dataframe(profile)
+		csv = profile.to_csv(index=False).encode("utf-8")
+		st.download_button("Download Profile CSV", data=csv, file_name="data_profile.csv", mime="text/csv")
 
-	# Missing and correlation visuals
-	st.subheader("Missing Values by Column")
-	missing_heatmap(df)
-	st.subheader("Correlation Heatmap (Numeric)")
-	correlation_heatmap(df)
+	with tab_numeric:
+		num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+		if not num_cols:
+			st.info("No numeric columns detected.")
+		else:
+			col = st.selectbox("Numeric column", num_cols)
+			vals = pd.to_numeric(df[col], errors="coerce")
+			fig = px.histogram(vals.dropna(), x=col, nbins=50, title=f"Distribution of {col}", marginal="box")
+			st.plotly_chart(fig, use_container_width=True)
 
-	# Issue snapshot and advisories
-	st.subheader("Detected Drawbacks / Issues")
-	_, issues, advisories = compute_profiling(df)
-	st.write(issues)
-	if advisories:
-		st.info("\n".join(advisories.values()))
+	with tab_cats:
+		cat_cols = [c for c in df.columns if df[c].dtype == object or pd.api.types.is_string_dtype(df[c])]
+		if not cat_cols:
+			st.info("No categorical columns detected.")
+		else:
+			col = st.selectbox("Categorical column", cat_cols)
+			st.dataframe(value_frequencies(df, col))
+			freq = value_frequencies(df, col)
+			st.plotly_chart(px.bar(freq, x="value", y="frequency", title=f"Top Values – {col}"), use_container_width=True)
 
-	# Actions
+	with tab_missing:
+		missing_heatmap(df)
+
+	with tab_corr:
+		correlation_heatmap(df)
+
+	with tab_time:
+		time_distributions(df)
+
+	with tab_memory:
+		mem = memory_usage_by_column(df)
+		st.dataframe(mem)
+		st.plotly_chart(px.bar(mem, x="column", y="memory_bytes", title="Memory Usage by Column"), use_container_width=True)
+
+	st.divider()
 	st.subheader("Recommended Actions")
 	c1, c2, c3 = st.columns(3)
 	with c1:
@@ -396,7 +440,7 @@ def profiling_page(df: pd.DataFrame) -> None:
 			st.session_state["working_df"] = apply_fix_drop_future_dates(st.session_state["working_df"])
 			st.success("Dropped future-dated rows.")
 
-	c4, c5 = st.columns(2)
+	c4, c5, c6 = st.columns(3)
 	with c4:
 		cap_q = st.slider("Cap outliers at quantile", min_value=0.90, max_value=0.999, value=0.99, step=0.001)
 		if st.button("Cap High Outliers"):
@@ -405,6 +449,9 @@ def profiling_page(df: pd.DataFrame) -> None:
 	with c5:
 		if st.button("Recompute Profile"):
 			st.experimental_rerun()
+	with c6:
+		csv2 = st.session_state["working_df"].to_csv(index=False).encode("utf-8")
+		st.download_button("Download Cleaned Data", data=csv2, file_name="cleaned_data.csv", mime="text/csv")
 
 	st.divider()
 	st.subheader("Preview After Fixes")
